@@ -1,0 +1,16 @@
+[Unit]
+Description=Tinc net %i
+PartOf=tinc.service
+ReloadPropagatedFrom=tinc.service
+ 
+[Service]
+Type=simple
+WorkingDirectory=/etc/tinc/%i
+ExecStart=/usr/sbin/tincd -n %i -D
+ExecReload=/usr/sbin/tincd -n %i -kHUP
+TimeoutStopSec=5
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=tinc.service

@@ -1,0 +1,212 @@
+/*
+    logger.c -- logging code
+    Copyright (C) 2004-2016 Guus Sliepen <guus@tinc-vpn.org>
+                  2004-2005 Ivo Timmermans
+                  2017-2018 Manav Kumar Mehta <manavkumarm@yahoo.com>
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program; if not, write to the Free Software Foundation, Inc.,
+    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+#include "system.h"
+
+#include "conf.h"
+#include "logger.h"
+/********* BEGIN CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+// Header file needed for calling xmalloc_and_zero() for allocating log buffer for iOS
+#include "xalloc.h"
+/********* END CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+
+debug_t debug_level = DEBUG_NOTHING;
+static logmode_t logmode = LOGMODE_STDERR;
+static pid_t logpid;
+extern char *logfilename;
+static FILE *logfile = NULL;
+#ifdef HAVE_MINGW
+static HANDLE loghandle = NULL;
+#endif
+static const char *logident = NULL;
+
+/********* BEGIN CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+// iOS logging changes
+
+// Callback function for printing messages to iOS App
+static void (*log_cb)(const char *, void *) = NULL;
+// Initialize buffer for printing messages to iOS App
+static char *log_buffer = NULL;
+// Context from iOS App, to be passed back to iOS App
+static void *log_ctxt = NULL;
+
+// Utility function for setting callback in iOS App for logging,
+// and for initializing the log buffer if not already done
+void setlogcb(void (*cb)(const char *, void *), void *ctxt) {
+    log_cb = cb;
+    log_ctxt = ctxt;
+    
+    if (!log_buffer) {
+        log_buffer = xmalloc_and_zero(LOG_BUFFER_SIZE);
+    }
+    
+    return;
+}
+/********* END CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+
+void openlogger(const char *ident, logmode_t mode) {
+	logident = ident;
+	logmode = mode;
+	
+	switch(mode) {
+		case LOGMODE_STDERR:
+			logpid = getpid();
+			break;
+		case LOGMODE_FILE:
+			logpid = getpid();
+			logfile = fopen(logfilename, "a");
+			if(!logfile) {
+				fprintf(stderr, "Could not open log file %s: %s\n", logfilename, strerror(errno));
+				logmode = LOGMODE_NULL;
+			}
+			break;
+		case LOGMODE_SYSLOG:
+#ifdef HAVE_MINGW
+			loghandle = RegisterEventSource(NULL, logident);
+			if(!loghandle) {
+				fprintf(stderr, "Could not open log handle!");
+				logmode = LOGMODE_NULL;
+			}
+			break;
+#else
+#ifdef HAVE_SYSLOG_H
+			openlog(logident, LOG_CONS | LOG_PID, LOG_DAEMON);
+			break;
+#endif
+#endif
+		case LOGMODE_NULL:
+			break;
+	}
+}
+
+void reopenlogger() {
+	if(logmode != LOGMODE_FILE)
+		return;
+
+	fflush(logfile);
+	FILE *newfile = fopen(logfilename, "a");
+	if(!newfile) {
+		logger(LOG_ERR, "Unable to reopen log file %s: %s", logfilename, strerror(errno));
+		return;
+	}
+	fclose(logfile);
+	logfile = newfile;
+}
+
+void logger(int priority, const char *format, ...) {
+	va_list ap;
+	char timestr[32] = "";
+	time_t now;
+    char ext_log_msg = xmalloc;
+    
+	va_start(ap, format);
+
+    /********* BEGIN CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+    // Print log message to iOS App by invoking callback in iOS code
+    if (log_cb) {
+        vsnprintf(log_buffer, LOG_BUFFER_SIZE - 2, format, ap);
+        int buflen = strlen(log_buffer);
+        log_buffer[buflen] = '\n';
+        log_buffer[buflen + 1] = '\0';
+        
+        log_cb(log_buffer, log_ctxt);
+        
+        // Restart the variable parameter list since it has been consumed but will be
+        // required by the code that follows
+        va_end(ap);
+        va_start(ap, format);
+    }
+    /********* END CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+
+	switch(logmode) {
+		case LOGMODE_STDERR:
+			vfprintf(stderr, format, ap);
+			fprintf(stderr, "\n");
+			fflush(stderr);
+			break;
+		case LOGMODE_FILE:
+			now = time(NULL);
+			strftime(timestr, sizeof timestr, "%Y-%m-%d %H:%M:%S", localtime(&now));
+			fprintf(logfile, "%s %s[%ld]: ", timestr, logident, (long)logpid);
+			vfprintf(logfile, format, ap);
+			fprintf(logfile, "\n");
+			fflush(logfile);
+			break;
+		case LOGMODE_SYSLOG:
+#ifdef HAVE_MINGW
+			{
+				char message[4096];
+				const char *messages[] = {message};
+				vsnprintf(message, sizeof(message), format, ap);
+				message[sizeof message - 1] = 0;
+				ReportEvent(loghandle, priority, 0, 0, NULL, 1, 0, messages, NULL);
+			}
+#else
+#ifdef HAVE_SYSLOG_H
+#ifdef HAVE_VSYSLOG
+			vsyslog(priority, format, ap);
+#else
+			{
+				char message[4096];
+				vsnprintf(message, sizeof(message), format, ap);
+				syslog(priority, "%s", message);
+			}
+#endif
+			break;
+#endif
+#endif
+		case LOGMODE_NULL:
+			break;
+	}
+
+	va_end(ap);
+}
+
+void closelogger(void) {
+
+    /********* BEGIN CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+    // De-allocate log buffer for printing log messages to iOS App
+    if (log_buffer) {
+        free(log_buffer);
+        log_buffer = NULL;
+    }
+    /********* END CHANGE: Manav Kumar Mehta, Jun 2017 *********/
+    
+    switch(logmode) {
+		case LOGMODE_FILE:
+			fclose(logfile);
+			break;
+		case LOGMODE_SYSLOG:
+#ifdef HAVE_MINGW
+			DeregisterEventSource(loghandle);
+			break;
+#else
+#ifdef HAVE_SYSLOG_H
+			closelog();
+			break;
+#endif
+#endif
+		case LOGMODE_NULL:
+		case LOGMODE_STDERR:
+			break;
+			break;
+	}
+}

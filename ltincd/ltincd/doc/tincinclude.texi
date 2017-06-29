@@ -1,0 +1,4 @@
+@set VERSION 1.0.31
+@set PACKAGE tinc
+@set sysconfdir /usr/local/etc
+@set localstatedir /usr/local/var
