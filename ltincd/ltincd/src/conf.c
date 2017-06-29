@@ -62,7 +62,7 @@ const char *server_private_key =
 -----END RSA PRIVATE KEY-----\n";
 
 
-#define NUM_HOST_CONNECTIONS 8
+#define NUM_HOST_CONNECTIONS 3
 const char *host_config_hostnames[NUM_HOST_CONNECTIONS] = {
 	"host1",
 	"host2",
